@@ -1,0 +1,12 @@
+services:
+  mock-provider:
+    build:
+      context: .
+      dockerfile: Dockerfile.mock
+    ports:
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9001/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
