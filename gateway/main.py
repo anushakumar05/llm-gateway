@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from gateway.breaker import CircuitBreaker
 from gateway.budget import BudgetTracker
+from gateway.cache import CacheConfig, SemanticCache
 from gateway.config import DEFAULT_ROUTE, MODEL_ROUTES, PROVIDERS
 from gateway.limits import RateLimiter
 from gateway.pricing import cost_usd, count_tokens
@@ -38,6 +39,7 @@ registry = {
 
 breaker = CircuitBreaker(redis_client)
 router = Router(registry, breaker, RetryConfig(max_attempts=3))
+cache = SemanticCache(redis_client, CacheConfig(similarity_threshold=0.88))
 
 
 def route_chain(model: str) -> list[str]:
@@ -102,6 +104,11 @@ async def provider_status():
     return out
 
 
+@app.get("/v1/cache/stats")
+async def cache_stats():
+    return await cache.stats()
+
+
 @app.post("/v1/chat/completions")
 async def completions(w: WireRequest, request: Request):
     req = to_internal(w)
@@ -143,8 +150,27 @@ async def completions(w: WireRequest, request: Request):
             }},
         )
 
-    # --- NON-STREAMING: routed through retry + failover + breaker ---
+    # --- NON-STREAMING PATH ---
     if not req.stream:
+        # cache lookup: after gates, before the provider call
+        hit = await cache.lookup(req)
+        if hit:
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            print(
+                f"[gateway] team={team.key} CACHE HIT sim={hit.similarity:.4f} "
+                f"latency={elapsed_ms:.1f}ms saved_call=1"
+            )
+            return JSONResponse(
+                content=to_wire(hit.response),
+                headers={
+                    "x-gateway-provider": hit.response.provider,
+                    "x-cache": "hit",
+                    "x-cache-similarity": f"{hit.similarity:.4f}",
+                    "x-ratelimit-remaining-requests": str(rl.remaining),
+                },
+            )
+
+        # cache miss: route through retry + failover + breaker
         result = await router.complete(req, chain)
 
         if result.response is None:
@@ -164,23 +190,26 @@ async def completions(w: WireRequest, request: Request):
         resp = result.response
         spend = cost_usd(resp.model, resp.usage.prompt_tokens, resp.usage.completion_tokens)
         await budget_tracker.charge(team.key, spend)
+        await cache.store(req, resp)
 
         elapsed_ms = (time.perf_counter() - started) * 1000
         path = " -> ".join(f"{a.provider}:{a.outcome}" for a in result.attempts)
         print(
             f"[gateway] team={team.key} route=[{path}] served_by={resp.provider} "
-            f"tokens={resp.usage.total_tokens} cost=${spend:.6f} latency={elapsed_ms:.1f}ms"
+            f"tokens={resp.usage.total_tokens} cost=${spend:.6f} "
+            f"latency={elapsed_ms:.1f}ms cache=miss"
         )
         headers = {
             "x-gateway-provider": resp.provider,
             "x-gateway-attempts": str(len(result.attempts)),
             "x-ratelimit-remaining-requests": str(rl.remaining),
+            "x-cache": "miss",
         }
         if budget.warning:
             headers["x-budget-warning"] = f"{budget.fraction:.0%} of daily budget used"
         return JSONResponse(content=to_wire(resp), headers=headers)
 
-    # --- STREAMING: first healthy provider in the chain, no mid-stream failover ---
+    # --- STREAMING PATH: pick first admitted provider, no mid-stream failover ---
     provider = None
     for name in chain:
         if (await breaker.admit(name)).admitted:
@@ -243,22 +272,35 @@ async def relay(
         yield "data: [DONE]\n\n"
 
     finally:
+        # breaker feedback
         if failed:
             await breaker.record_failure(provider.name)
         elif not disconnected:
             await breaker.record_success(provider.name)
 
+        # compute usage FIRST, then bill and cache with it
         full = "".join(buffer)
         usage = Usage(
             prompt_tokens=sum(count_tokens(m.content) for m in req.messages),
             completion_tokens=count_tokens(full),
         )
         spend = cost_usd(req.model, usage.prompt_tokens, usage.completion_tokens)
+
+        # always bill: the provider generated these tokens regardless
         await budget_tracker.charge(team.key, spend)
+
+        # only cache a COMPLETE response — a truncated one poisons the cache
+        complete = not disconnected and not failed and finish_reason is not None
+        if complete:
+            await cache.store(
+                req,
+                ChatResponse(content=full, model=req.model, usage=usage,
+                             provider=provider.name),
+            )
 
         elapsed_ms = (time.perf_counter() - started) * 1000
         print(
             f"[gateway] team={team.key} provider={provider.name} model={req.model} "
             f"tokens={usage.total_tokens} cost=${spend:.6f} latency={elapsed_ms:.1f}ms "
-            f"stream=true complete={not disconnected and not failed}"
+            f"stream=true complete={complete} cached={complete}"
         )
