@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt ruff
+
+      - name: Lint
+        run: ruff check gateway/ tests/ scripts/
+
+      - name: Start stack
+        run: |
+          docker compose up -d --build
+          for i in $(seq 1 60); do
+            curl -fsS http://localhost:8000/health && break
+            sleep 3
+          done
+
+      - name: Run tests
+        run: python -m pytest tests/ -v
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs

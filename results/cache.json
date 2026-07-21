@@ -1,0 +1,30 @@
+{
+  "label": "cache",
+  "requests": 2000,
+  "succeeded": 2000,
+  "failed": 0,
+  "wall_seconds": 25.15,
+  "throughput_rps": 79.5,
+  "total_latency_ms": {
+    "p50": 496.14,
+    "p95": 1306.69,
+    "p99": 1870.77,
+    "mean": 621.97
+  },
+  "gateway_overhead_ms": {
+    "p50": 938.66,
+    "p95": 1696.42,
+    "p99": 2358.11
+  },
+  "cache": {
+    "hits": 1704,
+    "misses": 296,
+    "hit_rate": 0.852,
+    "hit_p95_ms": 758.12,
+    "miss_p95_ms": 1964.52
+  },
+  "providers": {
+    "mock-a": 296,
+    "mock-a (cached)": 1704
+  }
+}

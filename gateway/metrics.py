@@ -32,6 +32,18 @@ PROVIDER_LATENCY = Histogram(
     buckets=(.01, .05, .1, .25, .5, 1, 2.5, 5, 10, 30),
 )
 
+EMBED_LATENCY = Histogram(
+    "gateway_embed_duration_seconds",
+    "Time to embed a prompt",
+    buckets=(.001, .005, .01, .025, .05, .1, .25, .5, 1, 2.5),
+)
+
+EMBED_QUEUE_WAIT = Histogram(
+    "gateway_embed_queue_wait_seconds",
+    "Time spent waiting for an embedding slot",
+    buckets=(.001, .005, .01, .025, .05, .1, .25, .5, 1, 2.5),
+)
+
 # --- gates ---
 
 RATE_LIMITED = Counter(
@@ -69,6 +81,10 @@ CACHE_SIMILARITY = Histogram(
 )
 
 CACHE_ENTRIES = Gauge("gateway_cache_entries", "Entries currently in the cache")
+
+CACHE_TIER = Counter(
+    "gateway_cache_tier_total", "Which cache tier served a hit", ["tier"]
+)
 
 # --- resilience ---
 

@@ -1,0 +1,33 @@
+{
+  "label": "cache",
+  "requests": 500,
+  "succeeded": 500,
+  "failed": 0,
+  "wall_seconds": 2.83,
+  "throughput_rps": 177.0,
+  "total_latency_ms": {
+    "p50": 57.46,
+    "p95": 725.23,
+    "p99": 865.15,
+    "mean": 248.84
+  },
+  "gateway_overhead_ms": {
+    "all_p50": 12.76,
+    "all_p95": 609.29,
+    "all_p99": 639.72,
+    "hit_p95": 595.32,
+    "miss_p95": 617.38,
+    "n_samples": 500
+  },
+  "cache": {
+    "hits": 426,
+    "misses": 74,
+    "hit_rate": 0.852,
+    "hit_p95_ms": 599.25,
+    "miss_p95_ms": 881.12
+  },
+  "providers": {
+    "mock-a (cached)": 426,
+    "mock-a": 74
+  }
+}

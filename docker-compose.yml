@@ -57,3 +57,21 @@ services:
       - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
     depends_on:
       - prometheus
+    
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      REDIS_URL: "redis://redis:6379"
+      MOCK_A_URL: "http://mock-provider:9001"
+      MOCK_B_URL: "http://mock-provider-b:9001"
+    depends_on:
+      redis:
+        condition: service_healthy
+      mock-provider:
+        condition: service_healthy
+      mock-provider-b:
+        condition: service_healthy

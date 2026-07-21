@@ -1,0 +1,33 @@
+{
+  "label": "failover",
+  "requests": 1000,
+  "succeeded": 1000,
+  "failed": 0,
+  "wall_seconds": 11.39,
+  "throughput_rps": 87.8,
+  "total_latency_ms": {
+    "p50": 268.39,
+    "p95": 387.31,
+    "p99": 647.78,
+    "mean": 280.79
+  },
+  "gateway_overhead_ms": {
+    "all_p50": 2.99,
+    "all_p95": 9.71,
+    "all_p99": 17.87,
+    "hit_p95": 0.0,
+    "miss_p95": 9.71,
+    "n_samples": 1000
+  },
+  "cache": {
+    "hits": 0,
+    "misses": 1000,
+    "hit_rate": 0.0,
+    "hit_p95_ms": 0.0,
+    "miss_p95_ms": 387.31
+  },
+  "providers": {
+    "mock-a": 426,
+    "mock-b": 574
+  }
+}

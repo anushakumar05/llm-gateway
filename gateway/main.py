@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -214,6 +215,7 @@ async def completions(w: WireRequest, request: Request):
                     "x-gateway-provider": hit.response.provider,
                     "x-cache": "hit",
                     "x-cache-similarity": f"{hit.similarity:.4f}",
+                    "x-gateway-overhead-ms": f"{elapsed*1000:.2f}",
                     "x-ratelimit-remaining-requests": str(rl.remaining),
                 },
             )
@@ -253,7 +255,7 @@ async def completions(w: WireRequest, request: Request):
 
         spend = cost_usd(resp.model, resp.usage.prompt_tokens, resp.usage.completion_tokens)
         await budget_tracker.charge(team.key, spend)
-        await cache.store(req, resp)
+        asyncio.create_task(cache.store(req, resp))
 
         m.COST_USD.labels(team=team.key, model=resp.model).inc(spend)
         m.TOKENS.labels(model=resp.model, direction="input").inc(resp.usage.prompt_tokens)

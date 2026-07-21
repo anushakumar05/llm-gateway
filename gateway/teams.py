@@ -17,6 +17,11 @@ TEAMS = {
     "team-normal": Team("team-normal", LimitConfig(rpm=60, tpm=100_000), daily_budget_usd=50.0),
     "team-cheap":  Team("team-cheap",  LimitConfig(rpm=10, tpm=10_000),  daily_budget_usd=1.0),
     "team-heavy":  Team("team-heavy",  LimitConfig(rpm=600, tpm=1_000_000), daily_budget_usd=500.0),
+    "team-loadtest": Team(
+        "team-loadtest",
+        LimitConfig(rpm=10_000_000, tpm=10_000_000_000),
+        daily_budget_usd=1_000_000.0,
+    ),
 }
 
 DEFAULT_TEAM = TEAMS["team-normal"]
