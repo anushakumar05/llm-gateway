@@ -9,3 +9,4 @@ redis==5.2.1
 tiktoken==0.7.0
 sentence-transformers==3.0.1
 numpy==1.26.4
+prometheus-client==0.21.0

@@ -6,11 +6,13 @@ import time
 from collections.abc import AsyncIterator
 
 import redis.asyncio as aioredis
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
 
-from gateway.breaker import CircuitBreaker
+from gateway import metrics as m
+from gateway.breaker import CircuitBreaker, State
 from gateway.budget import BudgetTracker
 from gateway.cache import CacheConfig, SemanticCache
 from gateway.config import DEFAULT_ROUTE, MODEL_ROUTES, PROVIDERS
@@ -24,6 +26,14 @@ from gateway.teams import Team, resolve_team
 from gateway.types import ChatRequest, ChatResponse, Message, Usage
 
 app = FastAPI(title="LLM Gateway")
+
+@app.on_event("startup")
+async def warm_up():
+    """Load the embedding model and create the cache index before serving traffic."""
+    from gateway.embeddings import embed
+    await embed("warmup")
+    await cache.ensure_index()
+    print("[gateway] warm-up complete")
 
 redis_client = aioredis.from_url(
     os.getenv("REDIS_URL", "redis://localhost:6379"), decode_responses=True
@@ -40,6 +50,8 @@ registry = {
 breaker = CircuitBreaker(redis_client)
 router = Router(registry, breaker, RetryConfig(max_attempts=3))
 cache = SemanticCache(redis_client, CacheConfig(similarity_threshold=0.88))
+
+_BREAKER_CODE = {State.CLOSED: 0, State.HALF_OPEN: 1, State.OPEN: 2}
 
 
 def route_chain(model: str) -> list[str]:
@@ -62,7 +74,7 @@ class WireRequest(BaseModel):
 def to_internal(w: WireRequest) -> ChatRequest:
     return ChatRequest(
         model=w.model,
-        messages=[Message(role=m.role, content=m.content) for m in w.messages],
+        messages=[Message(role=msg.role, content=msg.content) for msg in w.messages],
         stream=w.stream,
         temperature=w.temperature,
         max_tokens=w.max_tokens,
@@ -93,6 +105,20 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/metrics")
+async def prometheus_metrics():
+    # refresh gauges that aren't event-driven
+    for name in registry:
+        st = await breaker.state(name)
+        m.BREAKER_STATE.labels(provider=name).set(_BREAKER_CODE[st])
+    try:
+        stats = await cache.stats()
+        m.CACHE_ENTRIES.set(stats["entries"])
+    except Exception:
+        pass
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
 @app.get("/v1/providers")
 async def provider_status():
     out = {}
@@ -117,10 +143,13 @@ async def completions(w: WireRequest, request: Request):
     )
     chain = route_chain(req.model)
     started = time.perf_counter()
+    provider_seconds = 0.0
 
     # --- GATE 1: request rate limit ---
     rl = await rate_limiter.check_request(team.key, team.limits)
     if not rl.allowed:
+        m.RATE_LIMITED.labels(team=team.key, limit_type="requests").inc()
+        m.REQUESTS.labels(team=team.key, model=req.model, outcome="rate_limited").inc()
         return JSONResponse(
             status_code=429,
             content={"error": {"message": "request rate limit exceeded",
@@ -129,9 +158,11 @@ async def completions(w: WireRequest, request: Request):
         )
 
     # --- GATE 2: token rate limit ---
-    prompt_tokens = sum(count_tokens(m.content) for m in req.messages)
+    prompt_tokens = sum(count_tokens(msg.content) for msg in req.messages)
     tl = await rate_limiter.check_tokens(team.key, team.limits, prompt_tokens)
     if not tl.allowed:
+        m.RATE_LIMITED.labels(team=team.key, limit_type="tokens").inc()
+        m.REQUESTS.labels(team=team.key, model=req.model, outcome="rate_limited").inc()
         return JSONResponse(
             status_code=429,
             content={"error": {"message": "token rate limit exceeded",
@@ -142,6 +173,8 @@ async def completions(w: WireRequest, request: Request):
     # --- GATE 3: budget ---
     budget = await budget_tracker.check(team.key, team.daily_budget_usd)
     if not budget.allowed:
+        m.BUDGET_DENIED.labels(team=team.key).inc()
+        m.REQUESTS.labels(team=team.key, model=req.model, outcome="budget_denied").inc()
         return JSONResponse(
             status_code=402,
             content={"error": {
@@ -152,13 +185,28 @@ async def completions(w: WireRequest, request: Request):
 
     # --- NON-STREAMING PATH ---
     if not req.stream:
-        # cache lookup: after gates, before the provider call
-        hit = await cache.lookup(req)
+        if cache.cacheable(req):
+            hit = await cache.lookup(req)
+        else:
+            hit = None
+            m.CACHE_LOOKUPS.labels(result="skipped").inc()
+
         if hit:
-            elapsed_ms = (time.perf_counter() - started) * 1000
+            elapsed = time.perf_counter() - started
+            saved = cost_usd(
+                hit.response.model,
+                hit.response.usage.prompt_tokens,
+                hit.response.usage.completion_tokens,
+            )
+            m.CACHE_LOOKUPS.labels(result="hit").inc()
+            m.CACHE_SIMILARITY.observe(hit.similarity)
+            m.COST_SAVED_USD.labels(model=req.model).inc(saved)
+            m.REQUEST_LATENCY.labels(model=req.model, cache="hit").observe(elapsed)
+            m.OVERHEAD_LATENCY.labels(cache="hit").observe(elapsed)  # no provider call
+            m.REQUESTS.labels(team=team.key, model=req.model, outcome="success").inc()
             print(
                 f"[gateway] team={team.key} CACHE HIT sim={hit.similarity:.4f} "
-                f"latency={elapsed_ms:.1f}ms saved_call=1"
+                f"latency={elapsed*1000:.1f}ms saved=${saved:.6f}"
             )
             return JSONResponse(
                 content=to_wire(hit.response),
@@ -170,10 +218,18 @@ async def completions(w: WireRequest, request: Request):
                 },
             )
 
-        # cache miss: route through retry + failover + breaker
+        if cache.cacheable(req):
+            m.CACHE_LOOKUPS.labels(result="miss").inc()
+
+        provider_started = time.perf_counter()
         result = await router.complete(req, chain)
+        provider_seconds = time.perf_counter() - provider_started
+
+        for a in result.attempts:
+            m.PROVIDER_ATTEMPTS.labels(provider=a.provider, outcome=a.outcome).inc()
 
         if result.response is None:
+            m.REQUESTS.labels(team=team.key, model=req.model, outcome="upstream_error").inc()
             e = result.error
             return JSONResponse(
                 status_code=e.status_code if e else 503,
@@ -188,20 +244,39 @@ async def completions(w: WireRequest, request: Request):
             )
 
         resp = result.response
+
+        # failover happened if the winner wasn't the first provider in the chain
+        if result.attempts and result.attempts[-1].provider != chain[0]:
+            m.FAILOVERS.labels(
+                from_provider=chain[0], to_provider=result.attempts[-1].provider
+            ).inc()
+
         spend = cost_usd(resp.model, resp.usage.prompt_tokens, resp.usage.completion_tokens)
         await budget_tracker.charge(team.key, spend)
         await cache.store(req, resp)
 
-        elapsed_ms = (time.perf_counter() - started) * 1000
+        m.COST_USD.labels(team=team.key, model=resp.model).inc(spend)
+        m.TOKENS.labels(model=resp.model, direction="input").inc(resp.usage.prompt_tokens)
+        m.TOKENS.labels(model=resp.model, direction="output").inc(resp.usage.completion_tokens)
+
+        elapsed = time.perf_counter() - started
+        overhead = max(0.0, elapsed - provider_seconds)
+        m.REQUEST_LATENCY.labels(model=req.model, cache="miss").observe(elapsed)
+        m.PROVIDER_LATENCY.labels(provider=resp.provider).observe(provider_seconds)
+        m.OVERHEAD_LATENCY.labels(cache="miss").observe(overhead)
+        m.REQUESTS.labels(team=team.key, model=req.model, outcome="success").inc()
+
         path = " -> ".join(f"{a.provider}:{a.outcome}" for a in result.attempts)
         print(
             f"[gateway] team={team.key} route=[{path}] served_by={resp.provider} "
             f"tokens={resp.usage.total_tokens} cost=${spend:.6f} "
-            f"latency={elapsed_ms:.1f}ms cache=miss"
+            f"total={elapsed*1000:.1f}ms provider={provider_seconds*1000:.1f}ms "
+            f"overhead={overhead*1000:.1f}ms cache=miss"
         )
         headers = {
             "x-gateway-provider": resp.provider,
             "x-gateway-attempts": str(len(result.attempts)),
+            "x-gateway-overhead-ms": f"{overhead*1000:.2f}",
             "x-ratelimit-remaining-requests": str(rl.remaining),
             "x-cache": "miss",
         }
@@ -209,13 +284,17 @@ async def completions(w: WireRequest, request: Request):
             headers["x-budget-warning"] = f"{budget.fraction:.0%} of daily budget used"
         return JSONResponse(content=to_wire(resp), headers=headers)
 
-    # --- STREAMING PATH: pick first admitted provider, no mid-stream failover ---
+    # --- STREAMING PATH ---
     provider = None
     for name in chain:
-        if (await breaker.admit(name)).admitted:
+        admission = await breaker.admit(name)
+        if admission.admitted:
             provider = registry[name]
             break
+        m.PROVIDER_ATTEMPTS.labels(provider=name, outcome="skipped_open").inc()
+
     if provider is None:
+        m.REQUESTS.labels(team=team.key, model=req.model, outcome="upstream_error").inc()
         return JSONResponse(
             status_code=503,
             content={"error": {"message": "all providers unavailable",
@@ -237,6 +316,7 @@ async def relay(
     finish_reason = None
     disconnected = False
     failed = False
+    first_chunk_at: float | None = None
     resp = ChatResponse(content="", model=req.model, usage=Usage(), provider=provider.name)
 
     def frame(delta: dict, finish: str | None = None) -> str:
@@ -251,6 +331,8 @@ async def relay(
     try:
         yield frame({"role": "assistant"})
         async for chunk in provider.stream(req):
+            if first_chunk_at is None:
+                first_chunk_at = time.perf_counter()
             if await request.is_disconnected():
                 disconnected = True
                 break
@@ -272,22 +354,25 @@ async def relay(
         yield "data: [DONE]\n\n"
 
     finally:
-        # breaker feedback
         if failed:
             await breaker.record_failure(provider.name)
+            m.PROVIDER_ATTEMPTS.labels(provider=provider.name, outcome="error").inc()
         elif not disconnected:
             await breaker.record_success(provider.name)
+            m.PROVIDER_ATTEMPTS.labels(provider=provider.name, outcome="success").inc()
 
-        # compute usage FIRST, then bill and cache with it
         full = "".join(buffer)
         usage = Usage(
-            prompt_tokens=sum(count_tokens(m.content) for m in req.messages),
+            prompt_tokens=sum(count_tokens(msg.content) for msg in req.messages),
             completion_tokens=count_tokens(full),
         )
         spend = cost_usd(req.model, usage.prompt_tokens, usage.completion_tokens)
 
         # always bill: the provider generated these tokens regardless
         await budget_tracker.charge(team.key, spend)
+        m.COST_USD.labels(team=team.key, model=req.model).inc(spend)
+        m.TOKENS.labels(model=req.model, direction="input").inc(usage.prompt_tokens)
+        m.TOKENS.labels(model=req.model, direction="output").inc(usage.completion_tokens)
 
         # only cache a COMPLETE response — a truncated one poisons the cache
         complete = not disconnected and not failed and finish_reason is not None
@@ -298,9 +383,18 @@ async def relay(
                              provider=provider.name),
             )
 
-        elapsed_ms = (time.perf_counter() - started) * 1000
+        elapsed = time.perf_counter() - started
+        # for streams, overhead = time until the first byte came back from upstream
+        overhead = (first_chunk_at - started) if first_chunk_at else elapsed
+        m.REQUEST_LATENCY.labels(model=req.model, cache="miss").observe(elapsed)
+        m.OVERHEAD_LATENCY.labels(cache="miss").observe(max(0.0, overhead))
+        m.REQUESTS.labels(
+            team=team.key, model=req.model,
+            outcome="success" if complete else "upstream_error",
+        ).inc()
+
         print(
             f"[gateway] team={team.key} provider={provider.name} model={req.model} "
-            f"tokens={usage.total_tokens} cost=${spend:.6f} latency={elapsed_ms:.1f}ms "
+            f"tokens={usage.total_tokens} cost=${spend:.6f} latency={elapsed*1000:.1f}ms "
             f"stream=true complete={complete} cached={complete}"
         )

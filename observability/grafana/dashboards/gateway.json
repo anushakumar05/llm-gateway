@@ -1,0 +1,105 @@
+{
+    "title": "LLM Gateway",
+    "uid": "llm-gateway",
+    "timezone": "browser",
+    "refresh": "5s",
+    "time": { "from": "now-15m", "to": "now" },
+    "panels": [
+      {
+        "type": "stat",
+        "title": "Gateway overhead P95 (ms)",
+        "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
+        "targets": [{
+          "expr": "histogram_quantile(0.95, sum(rate(gateway_overhead_duration_seconds_bucket[1m])) by (le)) * 1000",
+          "legendFormat": "P95"
+        }],
+        "fieldConfig": { "defaults": { "unit": "ms", "decimals": 2,
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "orange", "value": 10 },
+            { "color": "red", "value": 25 }]}}}
+      },
+      {
+        "type": "stat",
+        "title": "Cache hit rate",
+        "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
+        "targets": [{
+          "expr": "sum(rate(gateway_cache_lookups_total{result=\"hit\"}[5m])) / clamp_min(sum(rate(gateway_cache_lookups_total{result=~\"hit|miss\"}[5m])), 0.0001)",
+          "legendFormat": "hit rate"
+        }],
+        "fieldConfig": { "defaults": { "unit": "percentunit", "decimals": 1 } }
+      },
+      {
+        "type": "stat",
+        "title": "Spend avoided by cache ($)",
+        "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
+        "targets": [{ "expr": "sum(gateway_cost_saved_usd_total)", "legendFormat": "saved" }],
+        "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 4 } }
+      },
+      {
+        "type": "stat",
+        "title": "Requests / sec",
+        "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
+        "targets": [{ "expr": "sum(rate(gateway_requests_total[1m]))", "legendFormat": "rps" }],
+        "fieldConfig": { "defaults": { "decimals": 1 } }
+      },
+      {
+        "type": "timeseries",
+        "title": "Latency breakdown (P95)",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+        "targets": [
+          { "expr": "histogram_quantile(0.95, sum(rate(gateway_request_duration_seconds_bucket[1m])) by (le)) * 1000", "legendFormat": "total" },
+          { "expr": "histogram_quantile(0.95, sum(rate(gateway_provider_duration_seconds_bucket[1m])) by (le)) * 1000", "legendFormat": "provider" },
+          { "expr": "histogram_quantile(0.95, sum(rate(gateway_overhead_duration_seconds_bucket[1m])) by (le)) * 1000", "legendFormat": "gateway overhead" }
+        ],
+        "fieldConfig": { "defaults": { "unit": "ms" } }
+      },
+      {
+        "type": "timeseries",
+        "title": "Cache hit vs miss latency (P95)",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+        "targets": [{
+          "expr": "histogram_quantile(0.95, sum(rate(gateway_request_duration_seconds_bucket[1m])) by (le, cache)) * 1000",
+          "legendFormat": "{{cache}}"
+        }],
+        "fieldConfig": { "defaults": { "unit": "ms" } }
+      },
+      {
+        "type": "timeseries",
+        "title": "Circuit breaker state",
+        "gridPos": { "h": 7, "w": 12, "x": 0, "y": 13 },
+        "targets": [{ "expr": "gateway_breaker_state", "legendFormat": "{{provider}}" }],
+        "fieldConfig": { "defaults": { "min": 0, "max": 2, "decimals": 0 } }
+      },
+      {
+        "type": "timeseries",
+        "title": "Provider attempts by outcome",
+        "gridPos": { "h": 7, "w": 12, "x": 12, "y": 13 },
+        "targets": [{
+          "expr": "sum(rate(gateway_provider_attempts_total[1m])) by (provider, outcome)",
+          "legendFormat": "{{provider}} {{outcome}}"
+        }]
+      },
+      {
+        "type": "timeseries",
+        "title": "Spend by team ($/hr)",
+        "gridPos": { "h": 7, "w": 12, "x": 0, "y": 20 },
+        "targets": [{
+          "expr": "sum(rate(gateway_cost_usd_total[5m])) by (team) * 3600",
+          "legendFormat": "{{team}}"
+        }],
+        "fieldConfig": { "defaults": { "unit": "currencyUSD" } }
+      },
+      {
+        "type": "timeseries",
+        "title": "Rejections",
+        "gridPos": { "h": 7, "w": 12, "x": 12, "y": 20 },
+        "targets": [
+          { "expr": "sum(rate(gateway_rate_limited_total[1m])) by (team, limit_type)", "legendFormat": "429 {{team}} {{limit_type}}" },
+          { "expr": "sum(rate(gateway_budget_denied_total[1m])) by (team)", "legendFormat": "402 {{team}}" }
+        ]
+      }
+    ],
+    "schemaVersion": 39,
+    "version": 1
+  }

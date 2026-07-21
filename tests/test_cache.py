@@ -5,6 +5,18 @@ import redis.asyncio as aioredis
 from gateway.cache import CacheConfig, SemanticCache, partition_key
 from gateway.types import ChatRequest, Message
 
+import pytest
+import redis.asyncio as aioredis
+
+
+@pytest.fixture(autouse=True)
+async def clear_cache():
+    r = aioredis.from_url("redis://localhost:6379", decode_responses=True)
+    for key in await r.keys("cache:entry:*"):
+        await r.delete(key)
+    await r.aclose()
+    yield
+
 GATEWAY = "http://localhost:8000"
 
 
