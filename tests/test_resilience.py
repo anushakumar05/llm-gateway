@@ -1,5 +1,4 @@
 import asyncio
-import time
 
 import httpx
 import pytest
@@ -18,13 +17,15 @@ def chaos(base: str, **kw):
 
 @pytest.fixture(autouse=True)
 async def clean():
-    chaos(MOCK_A); chaos(MOCK_B)
+    chaos(MOCK_A)
+    chaos(MOCK_B)
     r = aioredis.from_url("redis://localhost:6379", decode_responses=True)
     for k in await r.keys("breaker:*"):
         await r.delete(k)
     await r.aclose()
     yield
-    chaos(MOCK_A); chaos(MOCK_B)
+    chaos(MOCK_A)
+    chaos(MOCK_B)
 
 
 def test_fails_over_when_primary_down():
@@ -43,7 +44,6 @@ def test_does_not_fail_over_on_non_retryable():
     """A 401 should not waste a second provider call."""
     # mock returns 429/500 only; simulate non-retryable via a bad request shape
     # (adapt to whatever non-retryable your mock can produce)
-    pass
 
 
 @pytest.mark.asyncio

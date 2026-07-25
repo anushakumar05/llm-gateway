@@ -168,7 +168,8 @@ def flush_cache():
 async def scenario_baseline(args):
     """Cache bypassed (temperature>0). Measures gateway overhead on the provider path."""
     flush_cache()
-    set_chaos(MOCK_A); set_chaos(MOCK_B)
+    set_chaos(MOCK_A)
+    set_chaos(MOCK_B)
     return await run(args.n, args.concurrency,
                      lambda i: f"unique prompt {i} {random.random()}",
                      temperature=0.7)
@@ -177,7 +178,8 @@ async def scenario_baseline(args):
 async def scenario_cache(args):
     """Realistic repetition. Measures hit rate and the latency delta."""
     flush_cache()
-    set_chaos(MOCK_A); set_chaos(MOCK_B)
+    set_chaos(MOCK_A)
+    set_chaos(MOCK_B)
 
     def prompt_for(i: int) -> str:
         if random.random() < args.repeat_rate:
@@ -190,7 +192,8 @@ async def scenario_cache(args):
 async def scenario_failover(args):
     """Cache bypassed so every request must reach a provider."""
     flush_cache()
-    set_chaos(MOCK_A); set_chaos(MOCK_B)
+    set_chaos(MOCK_A)
+    set_chaos(MOCK_B)
 
     async def kill_primary_midway():
         await asyncio.sleep(3)

@@ -47,7 +47,14 @@ def test_overhead_reported_in_header():
 def test_cache_hit_is_faster_than_miss():
     import time
     prompt = "latency comparison probe alpha"
-    t0 = time.perf_counter(); ask(prompt); miss_ms = (time.perf_counter() - t0) * 1000
-    t0 = time.perf_counter(); r = ask(prompt); hit_ms = (time.perf_counter() - t0) * 1000
+
+    t0 = time.perf_counter()
+    ask(prompt)
+    miss_ms = (time.perf_counter() - t0) * 1000
+
+    t0 = time.perf_counter()
+    r = ask(prompt)
+    hit_ms = (time.perf_counter() - t0) * 1000
+
     assert r.headers["x-cache"] == "hit"
     assert hit_ms < miss_ms, f"hit {hit_ms:.1f}ms not faster than miss {miss_ms:.1f}ms"

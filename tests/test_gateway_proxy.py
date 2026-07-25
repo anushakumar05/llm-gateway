@@ -21,12 +21,6 @@ def healthy():
     set_chaos(MOCK_A)
     set_chaos(MOCK_B)
 
-@pytest.fixture(autouse=True)
-def healthy():
-    set_chaos(MOCK_A)
-    yield
-    set_chaos(MOCK_A)
-
 
 def test_proxies_non_streaming():
     resp = client.chat.completions.create(

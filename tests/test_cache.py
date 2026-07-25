@@ -2,11 +2,8 @@ import httpx
 import pytest
 import redis.asyncio as aioredis
 
-from gateway.cache import CacheConfig, SemanticCache, partition_key
+from gateway.cache import partition_key
 from gateway.types import ChatRequest, Message
-
-import pytest
-import redis.asyncio as aioredis
 
 
 @pytest.fixture(autouse=True)

@@ -1,4 +1,3 @@
-import pytest
 from openai import OpenAI
 
 client = OpenAI(base_url="http://localhost:9001/v1", api_key="not-a-real-key")

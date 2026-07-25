@@ -12,7 +12,7 @@ for i in range(100):
     times.append((time.perf_counter() - t0) * 1000)
 
 times.sort()
-print(f"n=100")
+print("n=100")
 print(f"p50 {times[50]:.2f} ms")
 print(f"p95 {times[95]:.2f} ms")
 print(f"mean {statistics.mean(times):.2f} ms")

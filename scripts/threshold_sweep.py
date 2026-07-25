@@ -2,7 +2,6 @@
 Measure the hit-rate vs. false-hit-rate tradeoff across similarity thresholds.
 Produces the data behind the README chart.
 """
-import asyncio
 import csv
 
 from gateway.embeddings import embed_sync
